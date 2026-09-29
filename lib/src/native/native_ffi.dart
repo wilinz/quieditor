@@ -1,8 +1,12 @@
 /// The `dart:ffi` arm of the conditional import in `native.dart`.
 ///
+/// What is here is only the crossing: the symbols to resolve, the buffers to
+/// allocate on this side of them, and the worker thread a search runs on.
+/// Everything that knows what a document is lives in `native_core.dart`, over
+/// the [NativeTransport] this file implements.
+///
 /// This is the only library in the package that imports `dart:ffi`, and the
-/// only one that names a native symbol. Everything above it goes through
-/// [ReEditorNativeApi].
+/// only one that names a native symbol.
 ///
 /// The `@Native` declarations live *here* rather than in a helper, and that is
 /// load-bearing: an annotation with no explicit `assetId` resolves symbols
@@ -17,14 +21,10 @@ import 'dart:ffi';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
-import 'package:flat_buffers/flat_buffers.dart' as flatbuffers;
 
-import 'generated/abi_generated.dart' as abi;
-import 'generated/chunk_generated.dart' as chunk;
-import 'generated/document_generated.dart' as documentfb;
-import 'generated/find_generated.dart' as findfb;
-import 'generated/highlight_generated.dart' as highlightfb;
 import 'native_api.dart';
+import 'native_core.dart';
+import 'native_transport.dart';
 
 /// True on every platform that reaches this library.
 const bool nativePlatformSupported = true;
@@ -83,9 +83,10 @@ external Pointer<Uint8> _docFind(
 
 /// Runs a search on a worker thread. Returns 0 when it was handed off.
 ///
-/// The last argument is handed back to [callback] unchanged, and is the only
-/// thing that connects an answer to the call waiting for it. An integer rather
-/// than a pointer, so there is nothing to allocate and nothing to keep alive.
+/// The last argument is handed back to [FindCallbackNative] unchanged, and is
+/// the only thing that connects an answer to the call waiting for it. An
+/// integer rather than a pointer, so there is nothing to allocate and nothing
+/// to keep alive.
 @Native<Int32 Function(Size, Pointer<Uint8>, Size, Pointer<NativeFunction<FindCallbackNative>>, Size)>(
     symbol: 're_editor_doc_find_async')
 external int _docFindAsync(
@@ -140,13 +141,26 @@ external void _free(Pointer<Uint8> ptr, int len);
 /// unchanged.
 typedef FindCallbackNative = Void Function(Pointer<Uint8>, Size, Size);
 
+/// A search that has been handed to a worker and not yet answered.
+///
+/// The decode is kept alongside the completer because the callback arrives with
+/// nothing but a search number: the worker has no idea which search it ran, and
+/// this is what says what to make of the bytes it brings.
+class _PendingSearch {
+  const _PendingSearch(this.completer, this.decode);
+
+  /// `Object?` rather than a type parameter: one map serves every search, and
+  /// there is only ever one kind of them. The cast at [NativeTransport.findAsync]
+  /// is where that is asserted.
+  final Completer<Object?> completer;
+  final Object? Function(Uint8List) decode;
+}
+
 /// Searches that have been handed to a worker and not yet answered.
 ///
 /// Keyed by the search number Rust is given and hands back, which is how a
-/// result finds the call that asked for it. Nothing else correlates them: the
-/// worker thread has no idea which search it is running.
-final Map<int, Completer<NativeFindResult?>> _searchesInFlight =
-    <int, Completer<NativeFindResult?>>{};
+/// result finds the call that asked for it.
+final Map<int, _PendingSearch> _searchesInFlight = <int, _PendingSearch>{};
 int _nextSearchId = 0;
 
 /// Receives finished searches. Runs on *this* isolate, posted here by the
@@ -159,8 +173,8 @@ final NativeCallable<FindCallbackNative> _searchCallback =
     NativeCallable<FindCallbackNative>.listener(_onSearchFinished);
 
 void _onSearchFinished(Pointer<Uint8> response, int length, int search) {
-  final Completer<NativeFindResult?>? completer = _searchesInFlight.remove(search);
-  if (completer == null) {
+  final _PendingSearch? pending = _searchesInFlight.remove(search);
+  if (pending == null) {
     // The document went away first, or the search was already written off.
     if (response != nullptr) {
       _free(response, length);
@@ -170,34 +184,17 @@ void _onSearchFinished(Pointer<Uint8> response, int length, int search) {
   if (response == nullptr) {
     // The pattern could not be compiled. Same answer as the synchronous call
     // gives for the same reason: no result at all.
-    completer.complete(null);
+    pending.completer.complete(null);
     return;
   }
   try {
     // Decoded before the buffer is released — the generated readers are lazy
     // views over these bytes.
-    completer.complete(_FfiNativeDocument.decodeMatches(response.asTypedList(length)));
+    pending.completer.complete(pending.decode(response.asTypedList(length)));
   } finally {
     _free(response, length);
   }
 }
-
-/// Releases documents Dart dropped without disposing.
-///
-/// One finalizer for every document: the value it carries is the handle itself,
-/// so a single instance serves all of them. Disposing detaches, so this never
-/// runs for a document that was released properly.
-///
-/// A handle that has already been released is nothing to worry about here,
-/// which is what makes this safe to leave to the garbage collector: releasing
-/// one twice costs a lookup and does nothing.
-final Finalizer<int> _documents = Finalizer<int>(_docFree);
-
-/// The same, for grammars.
-final Finalizer<int> _grammars = Finalizer<int>(_grammarFree);
-
-/// And for highlighters.
-final Finalizer<int> _highlighters = Finalizer<int>(_highlighterFree);
 
 /// Probes for the native core, or returns `null` when it is not usable.
 ///
@@ -220,168 +217,18 @@ ReEditorNativeApi? createReEditorNativeApi() {
   if (version != _expectedAbiVersion) {
     return null;
   }
-  return _FfiNativeApi();
+  return createNativeCore(_FfiTransport(version));
 }
 
-/// The spans in a decoded response, as plain Dart values.
-///
-/// Called while the buffer is still alive: the generated readers are lazy views
-/// over those bytes, and what comes out holds no reference to them.
-List<NativeHighlightNode> _nodesOf(List<highlightfb.HighlightNode>? nodes) {
-  if (nodes == null) {
-    return const <NativeHighlightNode>[];
-  }
-  return nodes
-      .map((highlightfb.HighlightNode node) => NativeHighlightNode(
-            scope: node.scope ?? '',
-            startLine: node.startLine,
-            startOffset: node.startOffset,
-            endLine: node.endLine,
-            endOffset: node.endOffset,
-            depth: node.depth,
-          ))
-      .toList();
-}
-
-/// Runs a native operation whose request is a FlatBuffer.
-///
-/// [decode] runs while the response buffer is still alive, because the generated
-/// readers are lazy views over those bytes. Anything that needs to outlive this
-/// call has to become a plain Dart value inside [decode].
-///
-/// An empty [request] is passed as a null pointer, which the native side reads
-/// as "no request" — that is how the operations that take only a handle are
-/// spelled.
-///
-/// Returns `null` when the native side declined, which is not the same as an
-/// empty answer: it only returns null when it could not answer at all.
-T? _invoke<T>(
-  Uint8List request,
-  Pointer<Uint8> Function(Pointer<Uint8>, int, Pointer<Size>) call,
-  T Function(Uint8List) decode,
-) {
-  final Pointer<Size> outLen = calloc<Size>();
-  final Pointer<Uint8> requestPtr =
-      request.isEmpty ? nullptr : malloc<Uint8>(request.length);
-  Pointer<Uint8> responsePtr = nullptr;
-  int responseLen = 0;
-  try {
-    if (requestPtr != nullptr) {
-      requestPtr.asTypedList(request.length).setAll(0, request);
-    }
-    responsePtr = call(requestPtr, request.length, outLen);
-    responseLen = outLen.value;
-    if (responsePtr == nullptr) {
-      return null;
-    }
-    return decode(responsePtr.asTypedList(responseLen));
-  } finally {
-    if (responsePtr != nullptr) {
-      _free(responsePtr, responseLen);
-    }
-    if (requestPtr != nullptr) {
-      malloc.free(requestPtr);
-    }
-    calloc.free(outLen);
-  }
-}
-
-class _FfiNativeApi implements ReEditorNativeApi {
-  @override
-  int get abiVersion => _expectedAbiVersion;
+/// The library, reached through `dart:ffi`.
+class _FfiTransport implements NativeTransport {
+  const _FfiTransport(this.abiVersion);
 
   @override
-  NativeDocument? openDocument(List<NativeLine> lines) {
-    final _LineEncoding encoded = _encodeLines(lines);
-    final flatbuffers.Builder builder =
-        flatbuffers.Builder(initialSize: encoded.size + 64);
-    // Written before the table starts: FlatBuffers builds back to front, so
-    // strings and vectors have to be laid down first.
-    final int textOffset = builder.writeString(encoded.text);
-    final int hiddenOffset = builder.writeString(encoded.hidden);
-    final int countsOffset = builder.writeListUint32(encoded.counts);
-    final documentfb.CreateRequestBuilder request =
-        documentfb.CreateRequestBuilder(builder);
-    request.begin();
-    request.addTextOffset(textOffset);
-    request.addLines(lines.length);
-    request.addHiddenOffset(hiddenOffset);
-    request.addHiddenCountsOffset(countsOffset);
-    builder.finish(request.finish());
-
-    final Uint8List bytes = builder.buffer;
-    final Pointer<Uint8> requestPtr = malloc<Uint8>(bytes.length);
-    try {
-      requestPtr.asTypedList(bytes.length).setAll(0, bytes);
-      final int handle = _docCreate(requestPtr, bytes.length);
-      if (handle == 0) {
-        return null;
-      }
-      return _FfiNativeDocument(handle);
-    } finally {
-      malloc.free(requestPtr);
-    }
-  }
+  final int abiVersion;
 
   @override
-  NativeGrammar? compileGrammar({
-    required String json,
-    Map<String, String> subLanguages = const <String, String>{},
-  }) {
-    // Built with the generated object builders rather than by hand: a request
-    // holding a list of tables is the one shape where writing the offsets
-    // yourself has something to get wrong, and flatc already wrote it.
-    final Uint8List bytes = highlightfb.GrammarRequestObjectBuilder(
-      json: json,
-      subLanguages: subLanguages.entries
-          .map((MapEntry<String, String> entry) =>
-              highlightfb.SubGrammarObjectBuilder(name: entry.key, json: entry.value))
-          .toList(),
-    ).toBytes();
-
-    final Pointer<Uint8> requestPtr = malloc<Uint8>(bytes.length);
-    try {
-      requestPtr.asTypedList(bytes.length).setAll(0, bytes);
-      final int handle = _grammarCreate(requestPtr, bytes.length);
-      if (handle == 0) {
-        return null;
-      }
-      return _FfiNativeGrammar(handle);
-    } finally {
-      malloc.free(requestPtr);
-    }
-  }
-
-  @override
-  NativeHighlighter? openHighlighter({
-    required String json,
-    Map<String, String> subLanguages = const <String, String>{},
-    required String text,
-  }) {
-    final Uint8List bytes = highlightfb.HighlighterRequestObjectBuilder(
-      json: json,
-      subLanguages: subLanguages.entries
-          .map((MapEntry<String, String> entry) =>
-              highlightfb.SubGrammarObjectBuilder(name: entry.key, json: entry.value))
-          .toList(),
-      text: text,
-    ).toBytes();
-
-    final Pointer<Uint8> requestPtr = malloc<Uint8>(bytes.length);
-    try {
-      requestPtr.asTypedList(bytes.length).setAll(0, bytes);
-      final int handle = _highlighterCreate(requestPtr, bytes.length);
-      if (handle == 0) {
-        return null;
-      }
-      return _FfiNativeHighlighter(handle);
-    } finally {
-      malloc.free(requestPtr);
-    }
-  }
-
-  @override
-  NativeAbiInfo readAbiInfo() {
+  Uint8List? abiInfo() {
     final Pointer<Size> outLen = calloc<Size>();
     Pointer<Uint8> buffer = nullptr;
     int length = 0;
@@ -389,17 +236,13 @@ class _FfiNativeApi implements ReEditorNativeApi {
       buffer = _abiInfo(outLen);
       length = outLen.value;
       if (buffer == nullptr || length == 0) {
-        throw StateError('re_editor_abi_info returned no data');
+        return null;
       }
-      // Everything is read out before the buffer is released. `flat_buffers`
-      // hands back lazy views over these bytes, so nothing that outlives this
-      // block may still be pointing at them — which is why the values are
-      // pulled into plain Dart types here rather than returned as a reader.
-      final abi.AbiInfo info = abi.AbiInfo(buffer.asTypedList(length));
-      return NativeAbiInfo(
-        abiVersion: info.abiVersion,
-        coreVersion: info.coreVersion ?? '',
-      );
+      // Copied, unlike every other response. The readers are lazy views over
+      // these bytes and the caller decodes after this returns, so the copy is
+      // what lets the buffer go; an identity is a few dozen bytes, which is the
+      // only reason that is not the wrong trade here.
+      return Uint8List.fromList(buffer.asTypedList(length));
     } finally {
       if (buffer != nullptr) {
         _free(buffer, length);
@@ -407,435 +250,124 @@ class _FfiNativeApi implements ReEditorNativeApi {
       calloc.free(outLen);
     }
   }
-}
-
-/// Lines as the three fields they travel in.
-///
-/// Built the same way for opening a document and for editing one, because the
-/// native side has to end up with the same kind of line either way.
-class _LineEncoding {
-  const _LineEncoding({
-    required this.text,
-    required this.hidden,
-    required this.counts,
-    required this.size,
-  });
-
-  /// The lines' own text, joined with `\n`.
-  final String text;
-
-  /// Every hidden line, concatenated in order and joined with `\n`.
-  ///
-  /// Empty for a document with nothing folded, which is the usual case: the
-  /// editor reads the collapsed view on every keystroke and only needs the
-  /// hidden lines to answer a search.
-  final String hidden;
-
-  /// How many of [hidden]'s lines belong to each of [text]'s.
-  ///
-  /// A vector of counts rather than a nested structure because FlatBuffers'
-  /// Dart side has no vector-of-offsets builder, and because the counts are
-  /// almost all zero: [hidden] stays one small string instead of a table per
-  /// line.
-  final List<int> counts;
-
-  /// Roughly how much room the FlatBuffer needs.
-  final int size;
-}
-
-_LineEncoding _encodeLines(List<NativeLine> lines) {
-  final String text = lines.map((NativeLine line) => line.text).join('\n');
-  final String hidden = lines.expand((NativeLine line) => line.hidden).join('\n');
-  return _LineEncoding(
-    text: text,
-    hidden: hidden,
-    counts: lines.map((NativeLine line) => line.hidden.length).toList(),
-    size: text.length + hidden.length,
-  );
-}
-
-class _FfiNativeDocument implements NativeDocument {
-  _FfiNativeDocument(this._handle) {
-    _documents.attach(this, _handle, detach: this);
-  }
-
-  /// The handle the native side issued.
-  ///
-  /// Held past `dispose` rather than zeroed: the native side never issues a
-  /// handle twice, so one that has been released names nothing, and a call that
-  /// somehow got past `_checkAlive` would be answered rather than obeyed.
-  final int _handle;
-  bool _disposed = false;
-
-  void _checkAlive() {
-    if (_disposed) {
-      throw StateError('This document has been disposed.');
-    }
-  }
 
   @override
-  int get revision {
-    _checkAlive();
-    return _docRevision(_handle);
-  }
-
-  @override
-  int get lineCount {
-    _checkAlive();
-    return _docLineCount(_handle);
-  }
-
-  @override
-  bool splice({required int start, required int removed, required List<NativeLine> added}) {
-    _checkAlive();
-    final _LineEncoding encoded = _encodeLines(added);
-    final flatbuffers.Builder builder =
-        flatbuffers.Builder(initialSize: encoded.size + 64);
-    // Written before the table starts: FlatBuffers builds back to front, so
-    // strings and vectors have to be laid down first.
-    final int textOffset = builder.writeString(encoded.text);
-    final int hiddenOffset = builder.writeString(encoded.hidden);
-    final int countsOffset = builder.writeListUint32(encoded.counts);
-    final documentfb.SpliceRequestBuilder request =
-        documentfb.SpliceRequestBuilder(builder);
-    request.begin();
-    request.addStart(start);
-    request.addRemoved(removed);
-    request.addAdded(added.length);
-    request.addTextOffset(textOffset);
-    request.addHiddenOffset(hiddenOffset);
-    request.addHiddenCountsOffset(countsOffset);
-    builder.finish(request.finish());
-
-    final bool? changed = _invoke(
-      builder.buffer,
-      (Pointer<Uint8> request, int length, Pointer<Size> outLen) =>
-          _docSplice(_handle, request, length, outLen),
-      _decodeSplice,
-    );
-    if (changed == null) {
-      // The native side refused the splice, which means the two sides disagree
-      // about the document. Recovering would mean guessing which one is right;
-      // throwing makes the divergence visible where it happened.
-      //
-      // The count is read after the refusal rather than before, and is safe to:
-      // a refused splice leaves the document alone. Without it the message only
-      // repeats what the caller passed in — the side that is already known —
-      // and leaves out the one fact that says how far apart the two are.
-      throw StateError(
-        'The native document refused a splice at line $start removing $removed '
-        'and adding ${added.length}, against its $lineCount lines. '
-        'The two sides have diverged.',
-      );
-    }
-    return changed;
-  }
-
-  static bool _decodeSplice(Uint8List bytes) =>
-      documentfb.SpliceResponse(bytes).changed;
-
-  @override
-  NativeChunkAnalysis analyzeChunks() {
-    _checkAlive();
-    // No request: the native side reads the document it already has. That is
-    // the whole point of the handle.
-    final NativeChunkAnalysis? analysis = _invoke(
-      Uint8List(0),
-      (Pointer<Uint8> _, int __, Pointer<Size> outLen) =>
-          _docChunkAnalyze(_handle, outLen),
-      _decodeChunks,
-    );
-    if (analysis == null) {
-      throw StateError('The native document could not be analyzed.');
-    }
-    return analysis;
-  }
-
-  @override
-  Future<NativeFindResult?> find({
-    required String pattern,
-    required bool caseSensitive,
-    required bool regex,
-  }) async {
-    _checkAlive();
-    final flatbuffers.Builder builder =
-        flatbuffers.Builder(initialSize: pattern.length + 64);
-    // Written before the table starts: FlatBuffers builds back to front, so
-    // strings have to be laid down first.
-    final int patternOffset = builder.writeString(pattern);
-    final findfb.FindRequestBuilder request = findfb.FindRequestBuilder(builder);
-    request.begin();
-    request.addPatternOffset(patternOffset);
-    request.addCaseSensitive(caseSensitive);
-    request.addRegex(regex);
-    builder.finish(request.finish());
-
-    final Uint8List encoded = builder.buffer;
-    final Pointer<Uint8> requestPtr = malloc<Uint8>(encoded.length);
-    // The native side copies the request before it spawns the worker, so the
-    // buffer only has to outlive this call.
-    //
-    // The search number is registered before the call rather than after it:
-    // the worker has no idea when this frame ends, and the callback arrives
-    // with nothing but the number to find this completer by.
-    final int search = ++_nextSearchId;
-    final Completer<NativeFindResult?> completer = Completer<NativeFindResult?>();
-    _searchesInFlight[search] = completer;
+  int create(NativeKind kind, Uint8List request) {
+    final Pointer<Uint8> requestPtr = request.isEmpty ? nullptr : malloc<Uint8>(request.length);
     try {
-      requestPtr.asTypedList(encoded.length).setAll(0, encoded);
+      if (requestPtr != nullptr) {
+        requestPtr.asTypedList(request.length).setAll(0, request);
+      }
+      return switch (kind) {
+        NativeKind.document => _docCreate(requestPtr, request.length),
+        NativeKind.grammar => _grammarCreate(requestPtr, request.length),
+        NativeKind.highlighter => _highlighterCreate(requestPtr, request.length),
+      };
+    } finally {
+      if (requestPtr != nullptr) {
+        malloc.free(requestPtr);
+      }
+    }
+  }
+
+  @override
+  void free(NativeKind kind, int handle) {
+    switch (kind) {
+      case NativeKind.document:
+        _docFree(handle);
+      case NativeKind.grammar:
+        _grammarFree(handle);
+      case NativeKind.highlighter:
+        _highlighterFree(handle);
+    }
+  }
+
+  @override
+  int revision(int document) => _docRevision(document);
+
+  @override
+  int lineCount(int document) => _docLineCount(document);
+
+  @override
+  T? invoke<T>(
+    NativeOperation operation,
+    int handle,
+    Uint8List request,
+    T Function(Uint8List) decode,
+  ) {
+    final Pointer<Size> outLen = calloc<Size>();
+    final Pointer<Uint8> requestPtr =
+        request.isEmpty ? nullptr : malloc<Uint8>(request.length);
+    Pointer<Uint8> responsePtr = nullptr;
+    int responseLen = 0;
+    try {
+      if (requestPtr != nullptr) {
+        requestPtr.asTypedList(request.length).setAll(0, request);
+      }
+      responsePtr = switch (operation) {
+        NativeOperation.splice =>
+          _docSplice(handle, requestPtr, request.length, outLen),
+        // No request, and no pointer for one: the core reads the document it
+        // already holds.
+        NativeOperation.analyzeChunks => _docChunkAnalyze(handle, outLen),
+        NativeOperation.find =>
+          _docFind(handle, requestPtr, request.length, outLen),
+        NativeOperation.highlight =>
+          _highlight(handle, requestPtr, request.length, outLen),
+        NativeOperation.updateHighlighter =>
+          _highlighterUpdate(handle, requestPtr, request.length, outLen),
+        NativeOperation.highlighterSpans =>
+          _highlighterSpans(handle, requestPtr, request.length, outLen),
+      };
+      responseLen = outLen.value;
+      if (responsePtr == nullptr) {
+        return null;
+      }
+      return decode(responsePtr.asTypedList(responseLen));
+    } finally {
+      if (responsePtr != nullptr) {
+        _free(responsePtr, responseLen);
+      }
+      if (requestPtr != nullptr) {
+        malloc.free(requestPtr);
+      }
+      calloc.free(outLen);
+    }
+  }
+
+  @override
+  Future<T?> findAsync<T>(
+    int document,
+    Uint8List request,
+    T Function(Uint8List) decode,
+  ) async {
+    final Pointer<Uint8> requestPtr = malloc<Uint8>(request.length);
+    // Registered before the call rather than after it: the worker has no idea
+    // when this frame ends, and the callback arrives with nothing but the
+    // number to find it by.
+    final int search = ++_nextSearchId;
+    final Completer<Object?> completer = Completer<Object?>();
+    _searchesInFlight[search] = _PendingSearch(completer, decode);
+    try {
+      requestPtr.asTypedList(request.length).setAll(0, request);
       final int handedOff = _docFindAsync(
-        _handle,
+        document,
         requestPtr,
-        encoded.length,
+        request.length,
         _searchCallback.nativeFunction,
         search,
       );
       if (handedOff != 0) {
         // No worker was started, so nothing is going to call back. Doing the
         // search here is slower than the caller was promised, but it is still
-        // an answer rather than a failure.
+        // an answer rather than a failure — and on a platform with no threads
+        // at all it is the only way it will ever be answered.
         _searchesInFlight.remove(search);
-        return _findHere(requestPtr, encoded.length);
+        return invoke(NativeOperation.find, document, request, decode);
       }
-      return await completer.future;
+      return await completer.future as T?;
     } finally {
       malloc.free(requestPtr);
     }
-  }
-
-  /// The search, run on this thread. Only reached when no worker could be
-  /// started.
-  NativeFindResult? _findHere(Pointer<Uint8> request, int length) {
-    final Pointer<Size> outLen = calloc<Size>();
-    Pointer<Uint8> response = nullptr;
-    int responseLen = 0;
-    try {
-      response = _docFind(_handle, request, length, outLen);
-      responseLen = outLen.value;
-      if (response == nullptr) {
-        return null;
-      }
-      return decodeMatches(response.asTypedList(responseLen));
-    } finally {
-      if (response != nullptr) {
-        _free(response, responseLen);
-      }
-      calloc.free(outLen);
-    }
-  }
-
-  /// Turns a response buffer into plain Dart values.
-  ///
-  /// Called while the buffer is still alive, because the generated readers are
-  /// lazy views over it; what comes out holds no reference to the bytes.
-  static NativeFindResult decodeMatches(Uint8List bytes) {
-    final findfb.FindResponse response = findfb.FindResponse(bytes);
-    final List<findfb.FindMatch>? matches = response.matches;
-    return NativeFindResult(
-      // Materialised here, not lazily: these readers point into the response
-      // buffer, which is released as soon as this returns.
-      matches: matches == null
-          ? const <NativeFindMatch>[]
-          : matches
-              .map((findfb.FindMatch match) => NativeFindMatch(
-                    startLine: match.startLine,
-                    startOffset: match.startOffset,
-                    endLine: match.endLine,
-                    endOffset: match.endOffset,
-                  ))
-              .toList(),
-      revision: response.revision,
-    );
-  }
-
-  static NativeChunkAnalysis _decodeChunks(Uint8List bytes) {
-    final chunk.ChunkAnalyzeResponse response = chunk.ChunkAnalyzeResponse(bytes);
-    final List<chunk.Chunk>? chunks = response.chunks;
-    return NativeChunkAnalysis(
-      // Materialised here, not lazily: these readers point into the response
-      // buffer, which is released as soon as this returns.
-      chunks: chunks == null
-          ? const <NativeChunk>[]
-          : chunks
-              .map((chunk.Chunk entry) => NativeChunk(index: entry.index, end: entry.end))
-              .toList(),
-      revision: response.revision,
-    );
-  }
-
-  @override
-  void dispose() {
-    if (_disposed) {
-      return;
-    }
-    _disposed = true;
-    // Detached first, so a document released here is not freed a second time
-    // when Dart collects it.
-    _documents.detach(this);
-    _docFree(_handle);
-  }
-}
-
-class _FfiNativeHighlighter implements NativeHighlighter {
-  _FfiNativeHighlighter(this._handle) {
-    _highlighters.attach(this, _handle, detach: this);
-  }
-
-  final int _handle;
-  bool _disposed = false;
-
-  void _checkAlive() {
-    if (_disposed) {
-      throw StateError('This highlighter has been disposed.');
-    }
-  }
-
-  @override
-  NativeHighlightChunk scan(int toLine) {
-    _checkAlive();
-    final Uint8List bytes = highlightfb.HighlighterSpansRequestObjectBuilder(
-      to: toLine,
-    ).toBytes();
-    final NativeHighlightChunk? chunk = _invoke(
-      bytes,
-      (Pointer<Uint8> request, int length, Pointer<Size> outLen) =>
-          _highlighterSpans(_handle, request, length, outLen),
-      decodeChunk,
-    );
-    if (chunk == null) {
-      throw StateError('The native highlighter could not highlight to $toLine.');
-    }
-    return chunk;
-  }
-
-  @override
-  List<NativeHighlightNode> spans() {
-    // Past the end of any document, which the native side clamps: asking for
-    // everything is a range like any other.
-    return scan(kAllHighlightLines).nodes;
-  }
-
-  @override
-  NativeHighlightUpdate splice({
-    required int start,
-    required int removed,
-    required List<String> added,
-  }) {
-    _checkAlive();
-    final Uint8List bytes = highlightfb.HighlighterSpliceRequestObjectBuilder(
-      start: start,
-      removed: removed,
-      added: added,
-    ).toBytes();
-    final NativeHighlightUpdate? update = _invoke(
-      bytes,
-      (Pointer<Uint8> request, int length, Pointer<Size> outLen) =>
-          _highlighterUpdate(_handle, request, length, outLen),
-      decodeUpdate,
-    );
-    if (update == null) {
-      // Every edit that decodes is answered, so a null here is the native side
-      // being unable to carry on with this document. A caller cannot render
-      // that as "nothing changed" — it would leave the lines that did change
-      // coloured as they were.
-      throw StateError(
-        'The native highlighter refused an edit at line $start removing $removed '
-        'and adding ${added.length}.',
-      );
-    }
-    return update;
-  }
-
-  /// Turns a response buffer into plain Dart values, while it is still alive:
-  /// the generated readers are lazy views over those bytes.
-  static NativeHighlightUpdate decodeUpdate(Uint8List bytes) {
-    final highlightfb.HighlighterUpdateResponse response =
-        highlightfb.HighlighterUpdateResponse(bytes);
-    return NativeHighlightUpdate(
-      from: response.from,
-      to: response.to,
-      replaced: response.replaced,
-      scannedTo: response.scannedTo,
-      nodes: _nodesOf(response.nodes),
-    );
-  }
-
-  static NativeHighlightChunk decodeChunk(Uint8List bytes) {
-    final highlightfb.HighlighterSpansResponse response =
-        highlightfb.HighlighterSpansResponse(bytes);
-    return NativeHighlightChunk(
-      from: response.from,
-      to: response.to,
-      nodes: _nodesOf(response.nodes),
-    );
-  }
-
-
-  @override
-  void dispose() {
-    if (_disposed) {
-      return;
-    }
-    _disposed = true;
-    _highlighters.detach(this);
-    _highlighterFree(_handle);
-  }
-}
-
-class _FfiNativeGrammar implements NativeGrammar {
-  _FfiNativeGrammar(this._handle) {
-    _grammars.attach(this, _handle, detach: this);
-  }
-
-  final int _handle;
-  bool _disposed = false;
-
-  @override
-  NativeHighlightResult highlight(String code) {
-    if (_disposed) {
-      throw StateError('This grammar has been disposed.');
-    }
-    final Uint8List bytes =
-        highlightfb.HighlightRequestObjectBuilder(code: code).toBytes();
-    final NativeHighlightResult? nodes = _invoke(
-      bytes,
-      (Pointer<Uint8> request, int length, Pointer<Size> outLen) =>
-          _highlight(_handle, request, length, outLen),
-      decodeResult,
-    );
-    if (nodes == null) {
-      // Every request that decodes is answered, so a null here means the native
-      // side could not answer at all. A caller cannot render that as "nothing
-      // was scoped" — it would lose the colours rather than report a problem.
-      throw StateError(
-        'The native grammar refused to highlight ${code.length} characters.',
-      );
-    }
-    return nodes;
-  }
-
-  /// Turns a response buffer into plain Dart values.
-  ///
-  /// Called while the buffer is still alive, because the generated readers are
-  /// lazy views over it; what comes out holds no reference to the bytes.
-  static NativeHighlightResult decodeResult(Uint8List bytes) {
-    final highlightfb.HighlightResponse response =
-        highlightfb.HighlightResponse(bytes);
-    return NativeHighlightResult(
-      nodes: _nodesOf(response.nodes),
-      relevance: response.relevance,
-    );
-  }
-
-  @override
-  void dispose() {
-    if (_disposed) {
-      return;
-    }
-    _disposed = true;
-    // Detached first, so a grammar released here is not freed a second time
-    // when Dart collects it.
-    _grammars.detach(this);
-    _grammarFree(_handle);
   }
 }
