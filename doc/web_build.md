@@ -66,6 +66,37 @@ finished. The Dart side treats a trapped module as a core it can no longer use
 and falls back to the Dart implementation, which is the same thing every other
 refusal does.
 
+## Running the browser tests
+
+`test/native_web_test.dart` puts the whole core through the module — a
+document, folds, search, a compiled grammar, a highlighter in pieces — and
+compares it against what every other platform answers. It needs a server that
+has the module, which the Dart test server is not, so it is told where to look:
+
+The test page and the module come from different origins, so whatever serves the
+module has to say it may be read from another one — and `python3 -m http.server`
+does not. From a directory holding `quieditor_wasm.wasm`:
+
+```sh
+python3 - <<'PY'
+import http.server
+class H(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        super().end_headers()
+http.server.HTTPServer(('127.0.0.1', 8789), H).serve_forever()
+PY
+
+flutter test --platform chrome test/native_web_test.dart \
+  --dart-define=RE_EDITOR_WEB_MODULE=http://127.0.0.1:8789/quieditor_wasm.wasm
+```
+
+Without the define the test skips, and says why rather than passing quietly.
+
+The example application is the other way to see it working: `fetch_web` into its
+`web/`, build for the web, and it prints which core it is running on when it
+starts.
+
 ## The check that makes the re-pin unavoidable
 
 `tool/web.lock` names the engine a browser fetches. `rust/Cargo.toml` names the

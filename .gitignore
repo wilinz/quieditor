@@ -34,8 +34,14 @@ build/
 /rust/target/
 /example/rust/target/
 
+# The browser's core module, where `dart run re_editor:fetch_web` puts it for
+# the application to serve. Fetched from a release and not carried here — the
+# lock that says which release is `tool/web.lock`, and doc/web_build.md has why
+# a committed copy is the alternative.
+/example/web/quieditor/
+
 # The engine is a repository of its own and is depended on over git rather than
-# by path — see `quieditor_engine` in rust/Cargo.toml. It is not tracked here:
+# by path — see `quieditor_ffi` in rust/Cargo.toml. It is not tracked here:
 # git records a nested repository as a single commit reference rather than as
 # files, which is a submodule with none of the submodule machinery around it.
 /rust/quieditor_engine/

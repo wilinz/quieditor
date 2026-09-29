@@ -5,6 +5,7 @@ library re_editor.ffi;
 
 import 'dart:typed_data' show Uint8List;
 import 'package:flat_buffers/flat_buffers.dart' as fb;
+import '../uint64_reader.dart';
 
 
 class FindRequest {
@@ -201,7 +202,7 @@ class FindResponse {
   ///  Matches in reading order, not overlapping.
   List<FindMatch>? get matches => const fb.ListReader<FindMatch>(FindMatch.reader).vTableGetNullable(_bc, _bcOffset, 4);
   ///  The document revision this searched.
-  int get revision => const fb.Uint64Reader().vTableGet(_bc, _bcOffset, 6, 0);
+  int get revision => const Uint64Reader().vTableGet(_bc, _bcOffset, 6, 0);
 
   @override
   String toString() {

@@ -1,17 +1,18 @@
 /// The no-native-code arm of the conditional import in `native.dart`.
 ///
-/// Selected when `dart.library.ffi` is absent — the web, today — so that
-/// nothing above this file has to know the platform. There is nothing to load
-/// and nothing to call, and the editor uses its Dart implementation.
+/// Selected when there is neither `dart:ffi` nor `dart:js_interop`, which in
+/// practice is nowhere: the two real arms cover every platform this package
+/// builds for. It is the default rather than a special case, so a platform that
+/// arrives with neither has somewhere to land that is written down.
 library;
 
 import 'native_api.dart';
 
 /// Returns `null`: this build has no native core.
-///
-/// Always inlined to a constant, so callers can drop their native branches
-/// entirely on platforms that never have one.
 ReEditorNativeApi? createReEditorNativeApi() => null;
+
+/// The same, asynchronously.
+Future<ReEditorNativeApi?> loadReEditorNativeApi() async => null;
 
 /// Whether this platform can host the Rust core at all.
 ///

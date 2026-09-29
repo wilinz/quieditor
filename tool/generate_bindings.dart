@@ -97,7 +97,7 @@ void main(List<String> args) {
         return;
       }
       File(p.join(dartOut.path, '${base}_generated.dart'))
-          .writeAsStringSync(dart.readAsStringSync());
+          .writeAsStringSync(_webReadable(dart.readAsStringSync()));
       written++;
     }
 
@@ -205,6 +205,31 @@ String _resolveFlatc() {
     exit(1);
   }
   return candidate;
+}
+
+/// Swaps the generated reader for `ulong` with one a browser can use.
+///
+/// flatc emits `const fb.Uint64Reader()`, and that reader reads a 64-bit integer
+/// through `ByteData.getUint64` — **which the web does not have**, because
+/// JavaScript has no 64-bit integer to put the answer in. It compiles on the VM,
+/// where every test has always run, and throws in a browser the first time a
+/// response carries a revision that is not the default.
+///
+/// Only three fields are `ulong`, all of them a document's revision, so this is
+/// a substitution rather than a general facility: a schema that grew a fourth
+/// one would be handled by the same line, and a schema that grew a `long` would
+/// not — `fb.Int64Reader` has the same problem and nothing needs it yet.
+String _webReadable(String source) {
+  if (!source.contains('fb.Uint64Reader')) {
+    return source;
+  }
+  return source
+      .replaceFirst(
+        "import 'package:flat_buffers/flat_buffers.dart' as fb;",
+        "import 'package:flat_buffers/flat_buffers.dart' as fb;\n"
+            "import '../uint64_reader.dart';",
+      )
+      .replaceAll('const fb.Uint64Reader()', 'const Uint64Reader()');
 }
 
 /// Finds the staged output whose name starts with `<base>_` and ends with

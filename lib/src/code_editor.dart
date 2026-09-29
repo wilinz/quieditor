@@ -360,6 +360,16 @@ class _CodeEditorState extends State<CodeEditor> {
   @override
   void initState() {
     super.initState();
+    // Asked for, not awaited, and not reported: on every platform but the web
+    // this has already answered by the time anything can look, and on the web it
+    // is a module that has to be fetched before the first keystroke would want
+    // it. Nothing here needs the answer — the editor asks again when it has
+    // work for the core, and picks it up then.
+    //
+    // Without this an application that did nothing but use this widget would
+    // run the Dart implementation in a browser for the whole session, slowly,
+    // with nothing anywhere saying why.
+    unawaited(ReEditorNative.prepare());
     _editorKey = GlobalKey();
     _focusNode = widget.focusNode ?? FocusNode();
     _editingController = _CodeLineEditingControllerDelegate();

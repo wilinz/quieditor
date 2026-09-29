@@ -220,6 +220,12 @@ ReEditorNativeApi? createReEditorNativeApi() {
   return createNativeCore(_FfiTransport(version));
 }
 
+/// Nothing to wait for here: a linked library is there or it is not, and the
+/// probe above already said which. The web is the platform that needs the other
+/// entry point — see `native_wasm.dart`.
+Future<ReEditorNativeApi?> loadReEditorNativeApi() async =>
+    createReEditorNativeApi();
+
 /// The library, reached through `dart:ffi`.
 class _FfiTransport implements NativeTransport {
   const _FfiTransport(this.abiVersion);

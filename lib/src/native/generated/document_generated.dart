@@ -5,6 +5,7 @@ library re_editor.ffi;
 
 import 'dart:typed_data' show Uint8List;
 import 'package:flat_buffers/flat_buffers.dart' as fb;
+import '../uint64_reader.dart';
 
 
 ///  The lines a document opens with.
@@ -289,7 +290,7 @@ class SpliceResponse {
   ///  work is still valid.
   bool get changed => const fb.BoolReader().vTableGet(_bc, _bcOffset, 4, false);
   ///  The document's revision after the splice.
-  int get revision => const fb.Uint64Reader().vTableGet(_bc, _bcOffset, 6, 0);
+  int get revision => const Uint64Reader().vTableGet(_bc, _bcOffset, 6, 0);
 
   @override
   String toString() {

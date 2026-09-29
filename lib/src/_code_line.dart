@@ -1178,7 +1178,12 @@ class _CodeLineEditingControllerImpl extends ValueNotifier<CodeLineEditingValue>
     final _NativeDocumentMirror? mirror =
         _nativeDocument ??= _NativeDocumentMirror.open(codeLines);
     if (mirror == null) {
-      _nativeDocumentUnavailable = true;
+      // Not recorded as unavailable while the core is still being looked for.
+      // On the web it arrives as a module that has to be fetched and
+      // instantiated, so this question has no answer for the first few frames
+      // — and a document opened in one of them would keep the Dart
+      // implementation for the rest of its life over a race it lost.
+      _nativeDocumentUnavailable = !ReEditorNative.isLoading;
       return null;
     }
     try {

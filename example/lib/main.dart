@@ -9,6 +9,17 @@ import 'package:re_editor_exmaple/editor_large_json.dart';
 import 'package:re_editor_exmaple/editor_large_text.dart';
 
 void main() {
+  // Said once, out loud, before anything is drawn. The window shows the same
+  // sentence, but on the web the console is the only place it can be read
+  // without looking, and which core is live is the first thing worth knowing
+  // about a build.
+  //
+  // Waited for rather than asked: on the web the core is a module that has to
+  // be fetched, so the answer is not known when `main` starts and would
+  // otherwise be reported before the editor had looked.
+  ReEditorNative.prepare().whenComplete(() {
+    debugPrint('re_editor demo: ${ReEditorNative.backendDescription}');
+  });
   runApp(const MyApp());
 }
 

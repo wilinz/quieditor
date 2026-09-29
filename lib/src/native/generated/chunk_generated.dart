@@ -5,6 +5,7 @@ library re_editor.ffi;
 
 import 'dart:typed_data' show Uint8List;
 import 'package:flat_buffers/flat_buffers.dart' as fb;
+import '../uint64_reader.dart';
 
 
 ///  A collapsible region: the line that opens it and the line that closes it.
@@ -98,7 +99,7 @@ class ChunkAnalyzeResponse {
   /// 
   ///  The caller compares it against the current revision to tell whether the
   ///  answer still describes the document it is looking at.
-  int get revision => const fb.Uint64Reader().vTableGet(_bc, _bcOffset, 6, 0);
+  int get revision => const Uint64Reader().vTableGet(_bc, _bcOffset, 6, 0);
 
   @override
   String toString() {

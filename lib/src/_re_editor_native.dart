@@ -21,13 +21,42 @@ const bool _kForcePureDart = bool.fromEnvironment('RE_EDITOR_FORCE_DART');
 /// and caching keeps all three to a single branch at the call site.
 abstract final class ReEditorNative {
   static ReEditorNativeApi? _api;
-  static bool _probed = false;
+  static NativeAbiInfo? _abiInfo;
+  static Future<void>? _probing;
+  static bool _settled = false;
 
   /// Whether this platform can host the native core at all.
   ///
-  /// `false` on the web. Distinct from [isAvailable], which is about whether a
-  /// usable library was actually found here and now.
+  /// `false` only where there is neither `dart:ffi` nor `dart:js_interop`.
+  /// Distinct from [isAvailable], which is about whether a usable core was
+  /// actually found here and now.
   static bool get isPlatformSupported => nativePlatformSupported;
+
+  /// Looks for the core and waits for the answer.
+  ///
+  /// Everything else here is synchronous and answers about the core as it
+  /// stands at the moment it is asked, which is what lets an editor fall back
+  /// without awaiting anything in a build method. On the web that means the
+  /// first frames can find nothing: the core is a module that has to be fetched
+  /// and instantiated, and there is no synchronous way to wait for that.
+  ///
+  /// So a caller that wants the core — a test, an application's `main` — asks
+  /// for it here, once, before the work that wants it starts.
+  static Future<void> prepare() {
+    _ensureProbed();
+    return _probing ?? Future<void>.value();
+  }
+
+  /// Whether the core is still being looked for.
+  ///
+  /// [isAvailable] cannot tell "not yet" from "never", and anything that caches
+  /// its answer needs the difference: a document opened in the first frames on
+  /// the web would otherwise keep the Dart implementation for its whole life
+  /// over a race it lost.
+  static bool get isLoading {
+    _ensureProbed();
+    return !_settled;
+  }
 
   /// Whether the native core is loaded and usable.
   ///
@@ -45,14 +74,19 @@ abstract final class ReEditorNative {
     return _abiInfo;
   }
 
-  static NativeAbiInfo? _abiInfo;
-
   /// A one-line description of which implementation is live, for logs and
   /// diagnostics. Cheap enough to call from a debug overlay.
   static String get backendDescription {
     if (!isAvailable) {
       if (_kForcePureDart) {
         return 'dart (native backend forced off by RE_EDITOR_FORCE_DART)';
+      }
+      // "Not yet" is worth saying beside "never". On the web the core is a
+      // module that has to be fetched, so the first frames are honestly neither
+      // — and a diagnostic that called that "the native library was not found"
+      // would send someone looking for a file that is on its way.
+      if (isLoading) {
+        return 'dart (still looking for the native core)';
       }
       return isPlatformSupported ? 'dart (native library not found)' : 'dart (platform has no native code)';
     }
@@ -61,28 +95,52 @@ abstract final class ReEditorNative {
   }
 
   static void _ensureProbed() {
-    if (_probed) {
+    if (_probing != null) {
       return;
     }
-    _probed = true;
-    if (_kForcePureDart) {
-      return;
-    }
-    final ReEditorNativeApi? api = createReEditorNativeApi();
-    if (api == null) {
-      return;
-    }
-    // Reading the identity also validates that the wire format is readable at
-    // all — a library that answers the version probe but cannot decode a
-    // FlatBuffer is not one we want to route work through.
-    final NativeAbiInfo info;
+    _probing = _probe();
+  }
+
+  static Future<void> _probe() async {
     try {
-      info = api.readAbiInfo();
-    } catch (_) {
-      return;
+      if (_kForcePureDart) {
+        return;
+      }
+      // Asked synchronously first, and on every platform but one that is the
+      // whole of it: a linked library is there or it is not. This runs before
+      // the first `await` below, so even though this method is asynchronous the
+      // answer is in place by the time `_ensureProbed` returns — which is what
+      // keeps `isAvailable` honest to a caller that asks in the next line.
+      ReEditorNativeApi? api = createReEditorNativeApi();
+      if (api == null) {
+        // The web, where the core is a module that has to be fetched before
+        // anything can be said about it.
+        try {
+          api = await loadReEditorNativeApi();
+        } catch (error) {
+          debugPrint('re_editor: the core could not be loaded: $error');
+          return;
+        }
+        if (api == null) {
+          return;
+        }
+      }
+      // Reading the identity also validates that the wire format is readable at
+      // all — a core that answers the version probe but cannot decode a
+      // FlatBuffer is not one we want to route work through.
+      final NativeAbiInfo info;
+      try {
+        info = api.readAbiInfo();
+      } catch (error) {
+        debugPrint('re_editor: the core answered the probe but not for itself: $error');
+        return;
+      }
+      _abiInfo = info;
+      _api = api;
+    } finally {
+      // Set whatever happened, so [isLoading] can stop saying yes.
+      _settled = true;
     }
-    _abiInfo = info;
-    _api = api;
   }
 
   /// The loaded API, or `null`. Callers must have checked [isAvailable]; this
