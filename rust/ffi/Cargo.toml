@@ -1,0 +1,17 @@
+[package]
+name = "re_editor_ffi"
+description = "Hand-written C ABI shim exposing quieditor_engine to Dart."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# `native_toolchain_rust` requires both: the staticlib is linked into the app,
+# the cdylib is what flutter_tester and `flutter run` load at runtime.
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+quieditor_engine.workspace = true
+flatbuffers.workspace = true

@@ -14,6 +14,18 @@ class CodeHighlightTheme {
   });
 
   /// Supported syntax highlighting language rules.
+  ///
+  /// One entry means that language highlights every document. Several mean the
+  /// document says which of them it is — the same choice `highlightAuto` makes,
+  /// by scoring each one.
+  ///
+  /// What is scored is the whole document for a short one, and its first couple
+  /// of hundred lines for a long one: reading all of a large file once per
+  /// language to decide what it is written in costs more than highlighting it.
+  /// A document that changes at its top — pasted over, most likely — is chosen
+  /// for again; one that changes elsewhere keeps the language it had, because a
+  /// language carries its state from line to line and switching halfway would
+  /// mean starting the document over.
   final Map<String, CodeHighlightThemeMode> languages;
 
   /// The syntax highlighting style theme.

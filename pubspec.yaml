@@ -4,14 +4,37 @@ version: 0.10.0
 homepage: https://reqable.com
 repository: https://github.com/reqable/re-editor
 
+# The lower bound is set by the build-hook packages below, which need Dart
+# 3.10 for the code-assets APIs. Raising it is a consequence of moving the
+# editor's hot paths into Rust; the Dart implementation still backs every
+# platform, but it now ships alongside a native one.
 environment:
-  sdk: ">=2.17.3 <4.0.0"
+  sdk: ">=3.10.0 <4.0.0"
 
 dependencies:
   flutter:
     sdk: flutter
   re_highlight: ^0.0.3
   isolate_manager: ^4.1.5+1
+
+  # Wire format for the Rust boundary. Used at runtime to read the buffers the
+  # native side produces.
+  flat_buffers: ^25.9.23
+
+  # Allocating the request buffers that are handed to Rust.
+  ffi: ^2.1.0
+
+  # Build-hook machinery for compiling rust/ffi into a code asset.
+  #
+  # These are runtime dependencies rather than dev_dependencies on purpose:
+  # `hook/build.dart` is compiled and run inside the *consumer's* build, so the
+  # packages it imports have to travel with re_editor.
+  hooks: ^2.2.0
+  native_toolchain_rust: ^1.0.7
+  code_assets: ^2.0.0
+
+  # Verifying the rustup installer download. Also only used by the hook.
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:

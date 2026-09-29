@@ -1,3 +1,13 @@
+## Unreleased
+* Highlight a document as it is drawn rather than all at once: opening a large
+  file no longer waits for the end of it. Over the package's own sources at
+  181,000 lines, opening goes from about 1070 ms to about 35 ms; the rest of the
+  document is filled in over the frames after it, and a keystroke still costs the
+  lines it touched.
+* Choose the language of a long document from its first couple of hundred lines
+  when the theme names several, instead of scoring every language over all of it.
+  Short documents are chosen for exactly as before.
+
 ## 0.10.0
 * Fix a typo, using `leadingDivider` instead of `sperator`.
 * Ignore the error when _CodeAutocompleteState is disposed.

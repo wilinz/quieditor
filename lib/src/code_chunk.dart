@@ -9,6 +9,10 @@ class CodeChunkController extends ValueNotifier<List<CodeChunk>> {
 
   late bool _shouldNotUpdateChunks;
 
+  /// Set in [dispose], so a deferred analysis does not write to a notifier that
+  /// is no longer listening.
+  bool _disposed = false;
+
   CodeChunkController(CodeLineEditingController controller, this._analyzer) : super(const []) {
     _controller = controller is _CodeLineEditingControllerDelegate ? controller.delegate : controller;
     _controller.addListener(_onCodeChanged);
@@ -99,6 +103,7 @@ class CodeChunkController extends ValueNotifier<List<CodeChunk>> {
 
   @override
   void dispose() {
+    _disposed = true;
     _controller.removeListener(_onCodeChanged);
     _tasker.close();
     super.dispose();
@@ -118,14 +123,76 @@ class CodeChunkController extends ValueNotifier<List<CodeChunk>> {
     _runChunkAnalyzeTask();
   }
 
+  /// The controller that owns the native document, if this is one of ours.
+  ///
+  /// Null for a custom [CodeLineEditingController] implementation, which has
+  /// nowhere to keep a native mirror; those go through the analyzer, which
+  /// builds a document of its own to ask the core with.
+  _CodeLineEditingControllerImpl? get _nativeOwner =>
+      _controller is _CodeLineEditingControllerImpl
+          ? _controller as _CodeLineEditingControllerImpl
+          : null;
+
   void _runChunkAnalyzeTask() {
     final CodeLines codeLines = _controller.codeLines;
+    // The exact runtime type, not `is`: an analyzer that subclasses the default
+    // one to override `run` would otherwise silently get the built-in analysis
+    // instead of its own. The isolate path costs a frame, which is nothing next
+    // to being wrong.
+    if (_analyzer.runtimeType == DefaultCodeChunkAnalyzer) {
+      final NativeChunkAnalysis? analysis = _nativeOwner?.analyzeChunksNatively();
+      if (analysis != null) {
+        final List<CodeChunk> chunks = analysis.chunks
+            .map((NativeChunk chunk) => CodeChunk(chunk.index, chunk.end))
+            .toList();
+        // The analysis itself ran just now, inside the controller's own
+        // notification. *Applying* it is deferred, for two reasons that both
+        // come from where this is called.
+        //
+        // The first is ordering. `expand()` and `collapse()` maintain `value`
+        // themselves and then mutate the controller; the re-analysis that
+        // follows has always landed after that work rather than in the middle
+        // of it, and the sequence callers observe should not depend on which
+        // implementation is running.
+        //
+        // The second is reentrancy. `_expandInvalidCollapsedChunks` calls
+        // `expand()`, which writes back to the controller. Deferring keeps that
+        // out of the notification it came from.
+        scheduleMicrotask(() {
+          if (_disposed || !_controller.codeLines.equals(codeLines)) {
+            return;
+          }
+          value = chunks;
+          _expandInvalidCollapsedChunks(_invalidCollapsedChunks(codeLines, chunks));
+        });
+        return;
+      }
+    }
     _tasker.run(_CodeChunkAnalyzePayload(_analyzer, codeLines), (result) {
       if (_controller.codeLines.equals(codeLines)) {
         value = result.chunks;
         _expandInvalidCollapsedChunks(result.invalidCollapsedChunkIndexes);
       }
     });
+  }
+
+  /// Collapsed lines whose folded state no longer matches the analysis.
+  ///
+  /// A line that holds chunks but no longer starts a region — or whose region
+  /// no longer has anything to hide — was collapsed against an older document
+  /// and has to be opened back up.
+  static List<int> _invalidCollapsedChunks(CodeLines codeLines, List<CodeChunk> chunks) {
+    final List<int> invalid = [];
+    for (int i = 0; i < codeLines.length; i++) {
+      if (!codeLines[i].chunkParent) {
+        continue;
+      }
+      final int index = chunks.indexWhere((e) => e.index == i);
+      if (index < 0 || chunks[index].canCollapse) {
+        invalid.add(i);
+      }
+    }
+    return invalid;
   }
 
   void _expandInvalidCollapsedChunks(List<int> indexes) {
@@ -138,17 +205,10 @@ class CodeChunkController extends ValueNotifier<List<CodeChunk>> {
   @pragma('vm:entry-point')
   static _CodeChunkAnalyzeResult _run(_CodeChunkAnalyzePayload payload) {
     final List<CodeChunk> chunks = payload.analyzer.run(payload.codeLines);
-    final List<int> invalidCollapsedChunkIndexes = [];
-    for (int i = 0; i < payload.codeLines.length; i++) {
-      if (!payload.codeLines[i].chunkParent) {
-        continue;
-      }
-      final int index = chunks.indexWhere((e) => e.index == i);
-      if (index < 0 || chunks[index].canCollapse) {
-        invalidCollapsedChunkIndexes.add(i);
-      }
-    }
-    return _CodeChunkAnalyzeResult(chunks, invalidCollapsedChunkIndexes);
+    return _CodeChunkAnalyzeResult(
+      chunks,
+      _invalidCollapsedChunks(payload.codeLines, chunks),
+    );
   }
 
 }
@@ -201,118 +261,39 @@ class NonCodeChunkAnalyzer implements CodeChunkAnalyzer {
 
 class DefaultCodeChunkAnalyzer implements CodeChunkAnalyzer {
 
-  static const Map<String, String> _chunkSymbols = {
-    '(': ')',
-    '[': ']',
-    '{': '}'
-  };
-  static final List<int> _tokens = '"\'()[]{}'.codeUnits;
-
   const DefaultCodeChunkAnalyzer();
 
+  /// Answers with the collapsible regions of [codeLines].
+  ///
+  /// The analysis is the Rust core's, and this is a way of asking it with lines
+  /// rather than with a document: it puts the lines into a native document of
+  /// their own and reads the analysis back out. That is a whole document's work
+  /// for one answer, which is why the editor does not go through it — a
+  /// controller that has one keeps it and asks it directly — but a caller
+  /// holding nothing but lines has no other way to the same answer.
+  ///
+  /// A build with no native core has no analysis to give, and answers with none:
+  /// there is no second implementation of this in Dart.
   @override
   List<CodeChunk> run(CodeLines codeLines) {
-    final List<CodeChunk> chunks = [];
-    final List<CodeChunkSymbol> stack = [];
-    final List<CodeChunkSymbol> chunkSymbols = parse(codeLines);
-    for (final CodeChunkSymbol symbol in chunkSymbols) {
-      if (_chunkSymbols.keys.contains(symbol.value)) {
-        stack.add(symbol);
-        continue;
-      }
-      while(stack.isNotEmpty) {
-        final CodeChunkSymbol pop = stack.removeLast();
-        if (_chunkSymbols[pop.value] == symbol.value) {
-          if (symbol.index - pop.index >= 1 && chunks.where((e) => e.index == pop.index).isEmpty) {
-            chunks.add(CodeChunk(pop.index, symbol.index));
-          }
-          break;
-        }
-      }
-    }
-    // sort by index
-    chunks.sort((a, b) => a.index - b.index);
-    return chunks;
-  }
-
-  @visibleForTesting
-  List<CodeChunkSymbol> parse(CodeLines codeLines) {
-    final List<CodeChunkSymbol> symbols = [];
+    final List<NativeLine> lines = <NativeLine>[];
     for (int i = 0; i < codeLines.length; i++) {
-      final String text = codeLines[i].text.trim();
-      if (text.isEmpty) {
-        continue;
-      }
-      symbols.addAll(_parseLine(text, i));
+      final CodeLine line = codeLines[i];
+      lines.add(NativeLine(line.text, line.chunks.map((CodeLine chunk) => chunk.text).toList()));
     }
-    return symbols;
-  }
-
-  List<CodeChunkSymbol> _parseLine(String text, int index) {
-    final List<CodeChunkSymbol> symbols = [];
-    const int normal = 0;
-    const int inQuote = 1;
-    const int inDoubleQuote = 2;
-    bool inEscapeQuote = false;
-    bool inEscapeDoubleQuote = false;
-    int state = normal;
-    final List<int> codeUnits = text.codeUnits;
-    for (int i = 0; i < codeUnits.length; i++) {
-      if (!_tokens.contains(codeUnits[i])) {
-        continue;
-      }
-      final String character = String.fromCharCode(codeUnits[i]);
-      if (state == inQuote) {
-        if (character == '\'' && !isPreEscapeChar(codeUnits, i)) {
-          state = normal;
-        }
-      } else if (state == inDoubleQuote) {
-        if (character == '"' && !isPreEscapeChar(codeUnits, i)) {
-          state = normal;
-        }
-      } else {
-        if (character == '\'') {
-          if (inEscapeQuote) {
-            if (isPreEscapeChar(codeUnits, i)) {
-              inEscapeQuote = false;
-            } else {
-              // Unbalanced escape quotes
-              break;
-            }
-          } else {
-            if (isPreEscapeChar(codeUnits, i)) {
-              inEscapeQuote = true;
-            } else {
-              state = inQuote;
-            }
-          }
-        } else if (character == '"') {
-          if (inEscapeDoubleQuote) {
-            if (isPreEscapeChar(codeUnits, i)) {
-              inEscapeDoubleQuote = false;
-            } else {
-              // Unbalanced escape double quotes
-              break;
-            }
-          } else {
-            if (isPreEscapeChar(codeUnits, i)) {
-              inEscapeDoubleQuote = true;
-            } else {
-              state = inDoubleQuote;
-            }
-          }
-        } else {
-          if (!inEscapeQuote && !inEscapeDoubleQuote) {
-            symbols.add(CodeChunkSymbol(character, index));
-          }
-        }
-      }
+    final NativeDocument? document = ReEditorNative.openDocument(lines);
+    if (document == null) {
+      return const <CodeChunk>[];
     }
-    return symbols;
-  }
-
-  bool isPreEscapeChar(List<int> codeUnits, int index) {
-    return index > 0 && codeUnits[index - 1] == '\\'.codeUnits.first;
+    try {
+      return document
+          .analyzeChunks()
+          .chunks
+          .map((NativeChunk chunk) => CodeChunk(chunk.index, chunk.end))
+          .toList();
+    } finally {
+      document.dispose();
+    }
   }
 
 }

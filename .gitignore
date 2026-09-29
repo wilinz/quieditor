@@ -27,3 +27,15 @@
 .dart_tool/
 .packages
 build/
+
+# Cargo's build output. Cargo.lock is deliberately kept: this workspace ships a
+# compiled artifact, so a reproducible dependency set is worth more than the
+# usual library convention of ignoring it.
+/rust/target/
+/example/rust/target/
+
+# The engine is a repository of its own and is depended on over git rather than
+# by path — see `quieditor_engine` in rust/Cargo.toml. It is not tracked here:
+# git records a nested repository as a single commit reference rather than as
+# files, which is a submodule with none of the submodule machinery around it.
+/rust/quieditor_engine/

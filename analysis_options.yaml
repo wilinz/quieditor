@@ -1,3 +1,15 @@
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+    # flatc output. Regenerate with `dart run tool/generate_bindings.dart`;
+    # it is not ours to keep lint-clean.
+    - lib/src/native/generated/**
 include: package:flutter_lints/flutter.yaml
 
 # Additional information about this file can be found at

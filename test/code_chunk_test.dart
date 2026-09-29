@@ -1,7 +1,19 @@
+// The chunk controller's behaviour, which is about folding and unfolding rather
+// than about finding the regions — those are the core's, and are tested in
+// `rust/core/src/chunk.rs`.
+//
+// It needs a core all the same: the regions it folds come from one, and a build
+// without a core has none to fold. Nothing here is skipped silently; the reason
+// names the build it was skipped on.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 
 void main() {
+  final String? skip = ReEditorNative.isAvailable
+      ? null
+      : 'no native core (${ReEditorNative.backendDescription}) — with no core '
+          'there are no regions to fold';
+
   group('CodeChunkController constructor', () {
     test('CodeChunkController()', () async {
       {
@@ -21,7 +33,7 @@ void main() {
         ]);
         controller.dispose();
       }
-    });
+    }, skip: skip);
   });
 
   group('CodeChunkController method', () {
@@ -344,7 +356,7 @@ void main() {
           CodeLine('}'),
         ]));
       }
-    });
+    }, skip: skip);
 
     test('expand()', () async {
       // Empty content, and no chunk
@@ -706,7 +718,7 @@ void main() {
         ]));
         controller.dispose();
       }
-    });
+    }, skip: skip);
 
     test('collapse() and expand()', () async {
       final CodeLineEditingController editingController = CodeLineEditingController.fromText('{\n\n}{\n\n}{\n\n}{\n\n}');
@@ -790,7 +802,7 @@ void main() {
         CodeLine('}'),
       ]));
       controller.dispose();
-    });
+    }, skip: skip);
 
     test('findByIndex()', () async {
       {
@@ -821,7 +833,7 @@ void main() {
         expect(controller.findByIndex(5), null);
         controller.dispose();
       }
-    });
+    }, skip: skip);
 
     test('canCollapse()', () async {
       {
@@ -849,7 +861,7 @@ void main() {
         expect(controller.canCollapse(3), false);
         controller.dispose();
       }
-    });
+    }, skip: skip);
 
     test('auto expand invalid collapsed chunks()', () async {
       {
@@ -929,7 +941,7 @@ void main() {
         ]));
         controller.dispose();
       }
-    });
+    }, skip: skip);
 
   });
 

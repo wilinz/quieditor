@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:re_editor_exmaple/editor_autocomplete.dart';
 import 'package:re_editor_exmaple/editor_basic_field.dart';
 import 'package:re_editor_exmaple/editor_json.dart';
+import 'package:re_editor/re_editor.dart' show ReEditorNative;
+import 'package:re_editor_exmaple/editor_large_code.dart';
+import 'package:re_editor_exmaple/editor_large_json.dart';
 import 'package:re_editor_exmaple/editor_large_text.dart';
 
 void main() {
@@ -52,6 +55,8 @@ class _MyHomePageState extends State<MyHomePage> {
     'Json Editor': JsonEditor(),
     'Auto Complete': AutoCompleteEditor(),
     'Large Text': LargeTextEditor(),
+    'Large Code': LargeCodeEditor(),
+    'Large Json': LargeJsonEditor(),
   };
 
   int _index = 0;
@@ -62,6 +67,16 @@ class _MyHomePageState extends State<MyHomePage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
+        // Which implementation is doing the highlighting, which is the first
+        // thing to check when the colour is what is wrong.
+        actions: <Widget>[
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 16),
+              child: Text(ReEditorNative.backendDescription),
+            ),
+          ),
+        ],
       ),
       body: Container(
         margin: const EdgeInsets.all(20),

@@ -2442,18 +2442,19 @@ void main() {
         controller.codeLines = CodeLines.of(const [
           CodeLine('abc{}')
         ]);
-        // Delete the {} at same time
+        // Delete only the }, not the } with its partner: deleting a closure
+        // symbol used to take the matching one with it, and no longer does.
         controller.selection = const CodeLineSelection.collapsed(
           index: 0,
           offset: 4
         );
         controller.deleteForward();
         expect(controller.codeLines, CodeLines.of(const [
-          CodeLine('abc')
+          CodeLine('abc{')
         ]));
         expect(controller.selection, const CodeLineSelection.collapsed(
           index: 0,
-          offset: 3
+          offset: 4
         ));
         // Rest code lines
         controller.codeLines = CodeLines.of([

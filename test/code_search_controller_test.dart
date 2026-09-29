@@ -1,8 +1,20 @@
 import 'package:flutter/material.dart';
+// The find panel and the controller that drives it.
+//
+// The searching itself is the core's — `rust/core/src/search.rs` — and so is
+// everything that reads the document to find matches: the tests below that
+// assert on *results* need a core, and say so rather than failing on a build
+// that has none. The panel's own behaviour needs nothing of the sort and runs
+// everywhere.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:re_editor/re_editor.dart';
 
 void main() {
+  final String? skip = ReEditorNative.isAvailable
+      ? null
+      : 'no native core (${ReEditorNative.backendDescription}) — with no core '
+          'there is nothing to search with, and nothing to find';
+
   group('CodeFindController getter ', () {
     test('`allMatchSelections`', () async {
       {
@@ -106,7 +118,7 @@ void main() {
         ]);
         controller.close();
       }
-    });
+    }, skip: skip);
 
     test('`currentMatchSelection`', () async {
       {
@@ -192,7 +204,7 @@ void main() {
           extentOffset: 1
         ));
       }
-    });
+    }, skip: skip);
   });
 
   group('CodeFindController method ', () {
@@ -265,7 +277,7 @@ void main() {
           )
         ));
       }
-    });
+    }, skip: skip);
 
     test('`replaceMode`', () async {
       {
@@ -336,7 +348,7 @@ void main() {
           )
         ));
       }
-    });
+    }, skip: skip);
 
     test('`focusOnFindInput`', () {
       final CodeFindController controller = CodeFindController(CodeLineEditingController());
@@ -751,7 +763,7 @@ void main() {
           CodeLine('bar'),
         ]));
       }
-    });
+    }, skip: skip);
 
     test('`replaceMatch`', () async {
       {
@@ -884,7 +896,7 @@ void main() {
           ])
         ]));
       }
-    });
+    }, skip: skip);
   });
 
   group('CodeEditor ', () {

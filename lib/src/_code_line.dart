@@ -1145,9 +1145,63 @@ class _CodeLineEditingControllerImpl extends ValueNotifier<CodeLineEditingValue>
   @override
   void dispose() {
     _editorKey = null;
+    _nativeDocument?.dispose();
+    _nativeDocument = null;
     _cache.dispose();
     super.dispose();
   }
+
+  /// The native copy of this document, or `null` when there is not one.
+  ///
+  /// Created on first use. One per controller rather than one per consumer, so
+  /// that bracket analysis, search and highlighting all read the same copy
+  /// instead of each keeping — and sending — their own.
+  _NativeDocumentMirror? _nativeDocument;
+
+  /// Set once the mirror has failed, so it is not attempted again. This runs on
+  /// every keystroke, and a document that could not be mirrored will not start
+  /// working on the next one.
+  bool _nativeDocumentUnavailable = false;
+
+  /// The native copy of this document, brought up to date with the model.
+  ///
+  /// `null` means the caller should use its own implementation — there is no
+  /// native core, or the two sides have diverged and the mirror was dropped.
+  ///
+  /// Every native operation goes through here rather than opening its own copy,
+  /// so the edits cross the boundary once per change however many consumers
+  /// there are.
+  _NativeDocumentMirror? syncNativeDocument() {
+    if (_nativeDocumentUnavailable) {
+      return null;
+    }
+    final _NativeDocumentMirror? mirror =
+        _nativeDocument ??= _NativeDocumentMirror.open(codeLines);
+    if (mirror == null) {
+      _nativeDocumentUnavailable = true;
+      return null;
+    }
+    try {
+      mirror.sync(codeLines);
+      return mirror;
+    } on Object catch (error) {
+      _nativeDocument = null;
+      _nativeDocumentUnavailable = true;
+      mirror.dispose();
+      assert(() {
+        // A refusal means the mirror's idea of the document and the model's
+        // have diverged, which is a bug in the diff rather than a condition to
+        // live with. Debug builds and tests fail on it; release drops the
+        // mirror and falls back, because taking down an edit someone is in the
+        // middle of is worse than running slower.
+        throw StateError('re_editor: the native document diverged: $error');
+      }());
+      return null;
+    }
+  }
+
+  /// Brings the native copy up to date and analyzes its collapsible regions.
+  NativeChunkAnalysis? analyzeChunksNatively() => syncNativeDocument()?.analyzeChunks();
 
   _CodeFieldRender? get _render => _editorKey?.currentContext?.findRenderObject() as _CodeFieldRender?;
 

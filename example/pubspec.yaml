@@ -5,7 +5,12 @@ publish_to: none
 version: 1.0.0
 
 environment:
-  sdk: ">=2.17.0 <3.0.0"
+  # Tracks re_editor, which this example exists to demonstrate. Its floor rose
+  # to 3.10 when the build hook and code assets came in, and a package cannot be
+  # built at a language version below the one its dependencies require — the
+  # old range here was already unsatisfiable, and only showed up once the
+  # example used a Dart 3 feature.
+  sdk: ">=3.10.0 <4.0.0"
   flutter: ">=1.17.0"
 
 dependencies:

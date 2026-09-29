@@ -3,7 +3,6 @@ part of re_editor;
 class _CodeFindControllerImpl extends ValueNotifier<CodeFindValue?> implements CodeFindController {
 
   late final CodeLineEditingController _controller;
-  late final _IsolateTasker<_CodeFindPayload, CodeFindResult?> _tasker;
   late final TextEditingController _findInputController;
   late final FocusNode _findInputFocusNode;
   late final TextEditingController _replaceInputController;
@@ -14,7 +13,6 @@ class _CodeFindControllerImpl extends ValueNotifier<CodeFindValue?> implements C
   _CodeFindControllerImpl(CodeLineEditingController controller, [CodeFindValue? value]) : super(value) {
     _controller = controller is _CodeLineEditingControllerDelegate ? controller.delegate : controller;
     _controller.addListener(_updateResult);
-    _tasker = _IsolateTasker<_CodeFindPayload, CodeFindResult?>('CodeFind', _run);
     _findInputController = TextEditingController();
     _findInputController.addListener(_onFindPatternChanged);
     _findInputFocusNode = FocusNode();
@@ -34,7 +32,6 @@ class _CodeFindControllerImpl extends ValueNotifier<CodeFindValue?> implements C
     _findInputFocusNode.dispose();
     _replaceInputController.dispose();
     _replaceInputFocusNode.dispose();
-    _tasker.close();
   }
 
   @override
@@ -369,29 +366,144 @@ class _CodeFindControllerImpl extends ValueNotifier<CodeFindValue?> implements C
       );
       return;
     }
-    final _CodeFindPayload payload = _CodeFindPayload(
-      codeLines: _controller.codeLines,
-      selection: _controller.unfoldLineSelection,
+    final CodeLines codeLines = _controller.codeLines;
+    final CodeLineSelection selection = _controller.unfoldLineSelection;
+    final bool forwardMatch = !_replacingMatch;
+
+    // The native side first. It already holds the document, so nothing has to be
+    // serialised across to an isolate — and the copy it holds carries the
+    // flattened view search reads, folded regions and all.
+    //
+    // The search runs on a worker thread, so the answer arrives later, exactly
+    // as the isolate's did. That is not incidental: applying a result expands
+    // the chunk holding the current match, which writes back to the controller
+    // that is in the middle of notifying.
+    final _NativeDocumentMirror? mirror = _nativeMirror();
+    if (mirror != null) {
+      final Future<NativeFindResult?> search = mirror.find(
+        pattern: option.pattern,
+        caseSensitive: option.caseSensitive,
+        regex: option.regex,
+      );
+      search
+          .then((NativeFindResult? found) => _applyResult(
+                option,
+                optionChanged,
+                _toFindResult(found, option, codeLines, selection, forwardMatch),
+              ));
+      return;
+    }
+
+    // No document to search: a controller of someone else's that keeps no
+    // native copy, or a build with no native core. The search is the core's and
+    // there is no second implementation of it here, so the panel is told there
+    // is nothing to show.
+    _applyResult(option, optionChanged, null);
+  }
+
+  /// The native copy of the document, if the controller keeps one.
+  ///
+  /// A custom [CodeLineEditingController] implementation has nowhere to keep
+  /// one, and has nothing to search.
+  _NativeDocumentMirror? _nativeMirror() {
+    final _CodeLineEditingControllerImpl? owner =
+        _controller is _CodeLineEditingControllerImpl
+            ? _controller as _CodeLineEditingControllerImpl
+            : null;
+    return owner?.syncNativeDocument();
+  }
+
+  /// The search result, or `null` when there is nothing to show.
+  ///
+  /// The Dart implementation spells "no match" and "no valid pattern" the same
+  /// way — as no result at all — so this does too rather than inventing a
+  /// distinction the panel has never drawn.
+  static CodeFindResult? _toFindResult(
+    NativeFindResult? found,
+    CodeFindOption option,
+    CodeLines codeLines,
+    CodeLineSelection selection,
+    bool forwardMatch,
+  ) {
+    if (found == null || found.matches.isEmpty) {
+      return null;
+    }
+    final List<CodeLineSelection> selections = found.matches
+        .map((NativeFindMatch match) => CodeLineSelection(
+              baseIndex: match.startLine,
+              baseOffset: match.startOffset,
+              extentIndex: match.endLine,
+              extentOffset: match.endOffset,
+            ))
+        .toList();
+    return CodeFindResult(
+      index: _currentMatchIndex(selections, selection, forwardMatch),
+      matches: selections,
       option: option,
-      forwardMatch: !_replacingMatch
+      codeLines: codeLines,
+      dirty: false,
     );
-    _tasker.run(payload, (result) {
-      if (option == value?.option) {
-        final CodeFindValue newValue = value!.copyWith(
-          result: result,
-          searching: false
-        );
-        if (optionChanged) {
-          _expandChunkIfNeeded(newValue);
+  }
+
+  /// Applies a search result, or the absence of one.
+  ///
+  /// Shared by both engines so that which one answered cannot change what the
+  /// panel shows.
+  void _applyResult(CodeFindOption option, bool optionChanged, CodeFindResult? result) {
+    if (option != value?.option) {
+      // The option changed while the search was in flight, so the answer is to
+      // a question nobody is asking any more.
+      value = value?.copyWith(result: null, searching: false);
+      return;
+    }
+    final CodeFindValue newValue = value!.copyWith(result: result, searching: false);
+    if (optionChanged) {
+      _expandChunkIfNeeded(newValue);
+    }
+    value = newValue;
+  }
+
+  /// Which match the caret is on, or should move to.
+  ///
+  /// Shared by both engines: the choice is about where the caret is, not about
+  /// how the matches were found, and a second copy of it would eventually
+  /// disagree with this one.
+  static int _currentMatchIndex(
+    List<CodeLineSelection> selections,
+    CodeLineSelection selection,
+    bool forwardMatch,
+  ) {
+    int index;
+    if (forwardMatch) {
+      index = selections.length - 1;
+      for (; index > 0; index--) {
+        if (selections[index].contains(selection)) {
+          break;
         }
-        value = newValue;
-      } else {
-        value = value?.copyWith(
-          result: null,
-          searching: false
-        );
+        if (selections[index].endIndex < selection.startIndex) {
+          break;
+        }
+        if (selections[index].endIndex == selection.startIndex &&
+          selections[index].endOffset <= selection.startOffset) {
+          break;
+        }
       }
-    });
+    } else {
+      index = 0;
+      for (; index < selections.length; index++) {
+        if (selections[index].contains(selection)) {
+          break;
+        }
+        if (selections[index].startIndex > selection.endIndex) {
+          break;
+        }
+        if (selections[index].startIndex == selection.endIndex &&
+          selections[index].startOffset >= selection.endOffset) {
+          break;
+        }
+      }
+    }
+    return max(min(index, selections.length - 1), 0);
   }
 
   void _expandChunkIfNeeded(CodeFindValue value) {
@@ -424,102 +536,4 @@ class _CodeFindControllerImpl extends ValueNotifier<CodeFindValue?> implements C
     // If the selection is in a nested chunk, we should expand the chunk from outside one by one
     _expandChunkIfSelectionInvisible(match);
   }
-
-  @pragma('vm:entry-point')
-  static CodeFindResult? _run(_CodeFindPayload payload) {
-    final RegExp? regExp = payload.option.regExp;
-    if (regExp == null) {
-      return null;
-    }
-    final List<String> rawCodeLines = payload.codeLines.toList().fold([], (previousValue, element) {
-      previousValue.addAll(element.flat());
-      return previousValue;
-    });
-    final Iterable<Match> matches = regExp.allMatches(rawCodeLines.join(TextLineBreak.lf.value));
-    if (matches.isEmpty) {
-      return null;
-    }
-    final List<CodeLineSelection> selections = [];
-    for (final Match match in matches) {
-      final CodeLinePosition start = _findPosition(rawCodeLines, match.start);
-      final CodeLinePosition end = _findPosition(rawCodeLines, match.end);
-      selections.add(CodeLineSelection(
-        baseIndex: start.index,
-        baseOffset: start.offset,
-        extentIndex: end.index,
-        extentOffset: end.offset
-      ));
-    }
-    int index;
-    if (payload.forwardMatch) {
-      index = selections.length - 1;
-      for (; index > 0; index--) {
-        if (selections[index].contains(payload.selection)) {
-          break;
-        }
-        if (selections[index].endIndex < payload.selection.startIndex) {
-          break;
-        }
-        if (selections[index].endIndex == payload.selection.startIndex &&
-          selections[index].endOffset <= payload.selection.startOffset) {
-          break;
-        }
-      }
-    } else {
-      index = 0;
-      for (; index < selections.length; index++) {
-        if (selections[index].contains(payload.selection)) {
-          break;
-        }
-        if (selections[index].startIndex > payload.selection.endIndex) {
-          break;
-        }
-        if (selections[index].startIndex == payload.selection.endIndex &&
-          selections[index].startOffset >= payload.selection.endOffset) {
-          break;
-        }
-      }
-    }
-    return CodeFindResult(
-      index: max(min(index, selections.length - 1), 0),
-      matches: selections,
-      option: payload.option,
-      codeLines: payload.codeLines,
-      dirty: false
-    );
-  }
-
-  static CodeLinePosition _findPosition(List<String> codeLines, int index) {
-    int start = 0;
-    int line = 0;
-    int offset = -1;
-    for (; line < codeLines.length; line++) {
-      if (index <= start + codeLines[line].length) {
-        offset = index - start;
-        break;
-      }
-      start += codeLines[line].length + 1;
-    }
-    return CodeLinePosition(
-      index: line,
-      offset: offset
-    );
-  }
-
-}
-
-class _CodeFindPayload {
-
-  final CodeLines codeLines;
-  final CodeLineSelection selection;
-  final CodeFindOption option;
-  final bool forwardMatch;
-
-  const _CodeFindPayload({
-    required this.codeLines,
-    required this.selection,
-    required this.option,
-    required this.forwardMatch,
-  });
-
 }
