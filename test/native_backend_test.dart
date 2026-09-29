@@ -52,7 +52,7 @@ void main() {
       if (info == null) {
         return;
       }
-      expect(info.abiVersion, 4);
+      expect(info.abiVersion, 5);
       expect(info.coreVersion, isNotEmpty);
       expect(ReEditorNative.backendDescription, startsWith('rust '));
     });

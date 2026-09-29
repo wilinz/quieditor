@@ -2,13 +2,6 @@
 resolver = "2"
 members = ["ffi"]
 
-# The engine lives in a repository of its own — fetched below — and on the
-# machine that develops it, it is checked out inside this one. Excluded rather
-# than merely unlisted so that a bare `cargo test` in that directory keeps
-# working: without this, the crate would look up, find a workspace whose members
-# do not include it, and refuse to build.
-exclude = ["quieditor_engine"]
-
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -17,17 +10,16 @@ license = "MIT"
 repository = "https://github.com/reqable/re-editor"
 
 [workspace.dependencies]
-# Fetched and pinned to the tag, not to a path and not to a branch. A path would
-# need a second checkout beside every clone of this repository, and a branch
-# would let someone else's push change what this ships. This workspace produces
-# a compiled artifact — which is why Cargo.lock is kept — and a dependency that
-# moves underneath it is the one thing that would make the lock a fiction.
-quieditor_engine = { git = "https://github.com/wilinz/quieditor_engine", tag = "v0.1.0" }
-
-# Only the `ffi` shim speaks FlatBuffers; the engine has no schema knowledge.
-# What the engine itself depends on is in its own manifest, which is where a
-# standalone library should carry it.
-flatbuffers = "25.12"
+# The engine's C ABI, and the WebAssembly module built from the same source,
+# fetched and pinned to the tag. A path would need a second checkout beside
+# every clone of this repository, and a branch would let someone else's push
+# change what this ships. This workspace produces a compiled artifact — which is
+# why Cargo.lock is kept — and a dependency that moves underneath it is the one
+# thing that would make the lock a fiction.
+#
+# The engine crate comes with it. Nothing here names `quieditor_engine` any
+# more: the crate that needs it is the shim, and the shim lives beside it now.
+quieditor_ffi = { git = "https://github.com/wilinz/quieditor_engine", tag = "v0.4.0" }
 
 [profile.release]
 # The editor hands this library whole documents to chew on, so optimise for

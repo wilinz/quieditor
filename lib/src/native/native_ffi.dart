@@ -31,10 +31,10 @@ const bool nativePlatformSupported = true;
 
 /// The ABI this Dart code was written against.
 ///
-/// Must match `re_editor_core::ABI_VERSION`. A mismatch means the bundled
+/// Must match `quieditor_engine::ABI_VERSION`. A mismatch means the bundled
 /// library is older than the Dart calling it, and the safe move is to use the
 /// Dart implementation rather than interpret the bytes wrongly.
-const int _expectedAbiVersion = 4;
+const int _expectedAbiVersion = 5;
 
 // --- Native symbols ---------------------------------------------------------
 //

@@ -3,6 +3,13 @@
 #
 # An exact version, not a channel: the build hook rejects `stable` / `beta` /
 # `nightly` because they make builds unreproducible.
+#
+# The engine has a toolchain file of its own, in its own repository, and it is
+# not this one. That is not an inconsistency to remove: when the hook builds,
+# rustup picks the toolchain from here and it compiles the engine too, so these
+# two are what has to agree. A compiler difference between the one CI builds the
+# WebAssembly module with and the one this builds the library with is a
+# difference nothing would report.
 [toolchain]
 channel = "1.95.0"
 targets = [

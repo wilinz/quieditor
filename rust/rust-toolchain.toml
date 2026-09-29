@@ -4,6 +4,11 @@
 # Keep this file and `ffi/rust-toolchain.toml` in sync: the build hook reads the
 # one next to the crate it builds, while a bare `cargo test` at the workspace
 # root reads this one.
+#
+# The engine keeps one too, in its own repository, and neither of these is it.
+# When the hook builds, the toolchain comes from here and compiles the engine
+# with it — so it is this pair that has to agree with each other, and with the
+# toolchain the engine's CI builds the WebAssembly module with.
 [toolchain]
 channel = "1.95.0"
 targets = [

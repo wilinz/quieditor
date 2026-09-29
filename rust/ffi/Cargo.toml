@@ -1,11 +1,22 @@
+# The library the build hook compiles.
+#
+# It has no code of its own. The C ABI is in the engine's repository, beside the
+# engine it wraps, because the WebAssembly module a browser fetches is built
+# from that same source and has to move when the engine does — and a build that
+# belongs to the consumer is a build the consumer has to remember.
+#
+# This crate exists because the hook builds a crate inside the project, and
+# because something has to make the ABI reachable from here. See src/lib.rs,
+# which is not empty by accident.
 [package]
 name = "re_editor_ffi"
-description = "Hand-written C ABI shim exposing quieditor_engine to Dart."
+description = "The engine's C ABI, compiled for this application. No code of its own."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 
 [lib]
 # `native_toolchain_rust` requires both: the staticlib is linked into the app,
@@ -13,5 +24,4 @@ repository.workspace = true
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-quieditor_engine.workspace = true
-flatbuffers.workspace = true
+quieditor_ffi.workspace = true

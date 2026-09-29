@@ -41,12 +41,21 @@ dependencies = [
 
 [[package]]
 name = "quieditor_engine"
-version = "0.1.0"
-source = "git+https://github.com/wilinz/quieditor_engine?tag=v0.1.0#5a0ae20acf551aba30ea20c91bf5219cb8a07b5c"
+version = "0.4.0"
+source = "git+https://github.com/wilinz/quieditor_engine?tag=v0.4.0#ac86701d70e0835c89c79256e52b16a20d4a1818"
 dependencies = [
  "regress",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "quieditor_ffi"
+version = "0.4.0"
+source = "git+https://github.com/wilinz/quieditor_engine?tag=v0.4.0#ac86701d70e0835c89c79256e52b16a20d4a1818"
+dependencies = [
+ "flatbuffers",
+ "quieditor_engine",
 ]
 
 [[package]]
@@ -62,8 +71,7 @@ dependencies = [
 name = "re_editor_ffi"
 version = "0.1.0"
 dependencies = [
- "flatbuffers",
- "quieditor_engine",
+ "quieditor_ffi",
 ]
 
 [[package]]
