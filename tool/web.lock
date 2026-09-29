@@ -1,0 +1,31 @@
+# Where the browser's module comes from, and what it must be.
+#
+# It is not committed in this package. A compiled artifact sitting beside the
+# sources it came from goes out of step with them, and one did in the project
+# this arrangement is copied from — a live page served a fixed bug for a while,
+# because rebuilding was a step someone had to remember.
+#
+# So it is built by the engine's CI and fetched from a release.
+# `dart run re_editor:fetch_web` does that, and refuses anything whose checksum
+# is not below: a release can be replaced, and a package that trusted whatever
+# a URL served would not be pinning anything.
+#
+# ENGINE_TAG is immutable. The engine also publishes `wasm-latest`, which moves
+# and is deliberately not used here: a lock that moves is not a lock.
+#
+# ENGINE_TAG is the same tag `rust/Cargo.toml` pins for the native library.
+# They are two artifacts of one commit — the .wasm a browser instantiates and
+# the library every other platform links — so a browser running a different
+# engine from every other platform is a state this file can be in. It is
+# checked rather than trusted: test/web_lock_test.dart fails when the two
+# drift apart.
+#
+# To move to a newer engine: raise the tag here and in rust/Cargo.toml, and
+# take the checksum from the `quieditor_wasm.build` beside the module in that
+# release. `dart run re_editor:fetch_web` prints what it received if the two
+# disagree.
+
+ENGINE_REPO=wilinz/quieditor_engine
+ENGINE_TAG=v0.4.0
+ENGINE_MODULE=quieditor_wasm.wasm
+ENGINE_SHA256=aa9ddaffba6cfb2a4685f608dee5be20bf2a8512abaa9db117e590e88d168568
